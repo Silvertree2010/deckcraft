@@ -1330,3 +1330,28 @@ fn stacked_combining_marks_take_a_face_that_draws_them() {
     }
     let _ = f;
 }
+
+#[test]
+fn a_zero_size_box_with_anchor_ctr_centres_one_line_on_the_box() {
+    // A shape saved with a 0 × 0 extent, `anchorCtr` and a right-aligned paragraph: the text is
+    // one line, centred on the box (the centred anchor overrides the paragraph's alignment).
+    let text = "The shape is top – center – overriding paragraph right alignment.";
+    let (p, mut sh) = setup(text, 0.0, 0.0);
+    let t = sh.text.as_mut().unwrap();
+    t.body.anchor = Some(Anchor::Top);
+    t.body.anchor_ctr = Some(true);
+    t.paragraphs[0].props.align = Some(Align::Right);
+    t.paragraphs[0].props.bullet = Some(Bullet::None);
+    let ctx = Ctx::for_slide(&p, &p.slides[0]).unwrap();
+    let rect = Rect::new(300.0, 100.0, 300.0, 100.0);
+    let l = layout(&ctx, &sh, sh.text.as_ref().unwrap(), &Opts { rect, fields: &NoFields, prompt_color: None, no_shrink: false });
+    assert_eq!(
+        l.lines.len(),
+        1,
+        "one line, not one per word or letter: {:?}",
+        l.lines.iter().map(|x| (x.para, x.start, x.end, x.extent)).collect::<Vec<_>>()
+    );
+    let (x0, x1) = l.lines[0].extent;
+    assert!(x1 - x0 > 50.0, "the sentence has width: {x0}..{x1}");
+    assert!(((x0 + x1) / 2.0 - 300.0).abs() < 1.0, "centred on the box: {x0}..{x1}");
+}

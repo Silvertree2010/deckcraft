@@ -1628,7 +1628,12 @@ fn layout_scaled(ctx: &Ctx, shape: &Shape, body: &TextBody, bp: &BodyProps, opts
     );
     // Text that follows a WordArt arch or circle is set on one line per paragraph.
     let follow = bp.warp.as_deref().is_some_and(deckcraft_geom::warp::is_follow);
-    let wrap = bp.wrap.unwrap_or(true) && !follow && !matches!(bp.autofit, Some(AutoFit::Shape) if shape.text_box && !bp.wrap.unwrap_or(true));
+    // A box with no width (a shape saved with a 0 × 0 extent) has no column to wrap in: its text
+    // stays on one line per paragraph instead of breaking at every word or letter.
+    let wrap = bp.wrap.unwrap_or(true)
+        && !follow
+        && r.width() > 0.0
+        && !matches!(bp.autofit, Some(AutoFit::Shape) if shape.text_box && !bp.wrap.unwrap_or(true));
     let ncols = bp.columns.unwrap_or(1).clamp(1, 16) as usize;
     let col_gap = bp.col_spacing.unwrap_or(0.0).max(0.0);
     let col_w = ((inner.width() - col_gap * (ncols as f64 - 1.0)) / ncols as f64).max(1.0);
@@ -1908,7 +1913,23 @@ fn layout_scaled(ctx: &Ctx, shape: &Shape, body: &TextBody, bp: &BodyProps, opts
         Anchor::Bottom | Anchor::Justified | Anchor::Distributed => inner.height() - used_h,
     };
     // anchorCtr: centre the block horizontally.
-    let dx = if bp.anchor_ctr.unwrap_or(false) { ((inner.width() - out.content_width) / 2.0).max(0.0) } else { 0.0 };
+    let anchor_ctr = bp.anchor_ctr.unwrap_or(false);
+    if anchor_ctr && !wrap && out.content_width > inner.width() + 0.01 {
+        // Text wider than its box: the block is as wide as its longest line, centred on the box,
+        // and each line aligns within the block (not within the narrower box).
+        let grow = (out.content_width - inner.width()) / 2.0;
+        let wide = Opts {
+            rect: Rect::new(opts.rect.x0 - grow, opts.rect.y0, opts.rect.x1 + grow, opts.rect.y1),
+            fields: opts.fields,
+            prompt_color: opts.prompt_color,
+            no_shrink: opts.no_shrink,
+        };
+        let one_line = BodyProps { wrap: Some(false), ..bp.clone() };
+        let mut l = layout_scaled(ctx, shape, body, &one_line, &wide, scale, reduce);
+        l.inner = inner;
+        return l;
+    }
+    let dx = if anchor_ctr { ((inner.width() - out.content_width) / 2.0).max(0.0) } else { 0.0 };
     let ox = inner.x0 + dx;
     let oy = inner.y0 + dy;
     // Emit runs, in visual order.
