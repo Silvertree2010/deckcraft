@@ -230,7 +230,7 @@ fn sci(toks: &[Tok], v: f64, sep: char, dec: char) -> Option<String> {
             exp -= 1;
         }
         // Rounding the mantissa to its digits can reach 10 (9.999 as `0.00`).
-        if format!("{m:.mant_frac$}").starts_with("10") {
+        if decimal_fixed(m, mant_frac).starts_with("10") {
             m /= 10.0;
             exp += 1;
         }
@@ -250,6 +250,56 @@ fn sci(toks: &[Tok], v: f64, sep: char, dec: char) -> Option<String> {
     let digits = exp.unsigned_abs().to_string();
     let pad = "0".repeat(width.saturating_sub(digits.len()));
     Some(format!("{mantissa}{e_char}{sign}{pad}{digits}{}", lits(rest)))
+}
+
+/// Round the 15-significant-digit decimal value, rather than its binary product.
+/// In particular, multiplying 1.005 by 100 falls below the half in binary.
+fn decimal_fixed(x: f64, frac: usize) -> String {
+    let scientific = format!("{x:.14e}");
+    let Some((mantissa, exponent)) = scientific.split_once('e') else {
+        return format!("{x:.frac$}");
+    };
+    let exponent: i32 = exponent.parse().unwrap_or(0);
+    let digits: Vec<u8> = mantissa.bytes().filter(u8::is_ascii_digit).collect();
+    let keep = i64::from(exponent) + 1 + i64::try_from(frac).unwrap_or(i64::MAX - 1024);
+    let mut rounded = if keep < 0 {
+        vec![b'0']
+    } else {
+        let keep = usize::try_from(keep).unwrap_or(0);
+        let mut rounded: Vec<u8> = digits.iter().copied().take(keep).collect();
+        rounded.resize(keep.max(1), b'0');
+        if digits.get(keep).is_some_and(|digit| *digit >= b'5') {
+            let mut carry = true;
+            for digit in rounded.iter_mut().rev() {
+                if *digit == b'9' {
+                    *digit = b'0';
+                } else {
+                    *digit += 1;
+                    carry = false;
+                    break;
+                }
+            }
+            if carry {
+                rounded.insert(0, b'1');
+            }
+        }
+        rounded
+    };
+    // Include the integer zero when the rounded value has only fractional digits.
+    if rounded.len() <= frac {
+        let mut padded = vec![b'0'; frac + 1 - rounded.len()];
+        padded.extend(rounded);
+        rounded = padded;
+    }
+    let point = rounded.len() - frac;
+    let mut out = String::with_capacity(rounded.len() + usize::from(frac > 0));
+    for (index, digit) in rounded.into_iter().enumerate() {
+        if frac > 0 && index == point {
+            out.push('.');
+        }
+        out.push(char::from(digit));
+    }
+    out
 }
 
 /// `v` (not negative) in the fixed-point format whose tokens are `toks`, with its digits from
@@ -275,12 +325,7 @@ fn fixed(toks: &[Tok], first: usize, last: usize, v: f64, sep: char, dec: char) 
     if !x.is_finite() {
         x = 0.0;
     }
-    // Excel rounds halves away from zero; `format!` rounds exact binary halves to even.
-    let scale = 10f64.powi(max_frac as i32);
-    if x.abs() * scale < 1e15 {
-        x = (x * scale).round() / scale;
-    }
-    let s = format!("{x:.max_frac$}");
+    let s = decimal_fixed(x, max_frac);
     let (ip, fp) = s.split_once('.').unwrap_or((s.as_str(), ""));
     let mut fp = fp.to_string();
     while fp.len() > min_frac && fp.ends_with('0') {
@@ -316,6 +361,23 @@ mod tests {
         assert_eq!(format("0", 0.5, None), "1");
         assert_eq!(format("0.00", 0.125, None), "0.13");
         assert_eq!(format("0", -2.5, None), "-3");
+    }
+
+    #[test]
+    fn rounds_decimal_halves_and_scientific_carries() {
+        for (value, expected) in [(1.005, "1.01"), (1.015, "1.02"), (1.025, "1.03"), (1.035, "1.04"), (2.675, "2.68"), (1.115, "1.12")] {
+            assert_eq!(format("0.00", value, None), expected);
+            assert_eq!(format("0.00", -value, None), format!("-{expected}"));
+        }
+        assert_eq!(format("0.0", 1.45, None), "1.5");
+        assert_eq!(format("0.0E+00", 9.95, None), "1.0E+01");
+        assert_eq!(format("0.00%", 0.01005, None), "1.01%");
+        assert_eq!(format("0.00,", 1005.0, None), "1.01");
+        assert_eq!(format("0.00", 1.0049, None), "1.00");
+        assert_eq!(format("0.00", 0.005, None), "0.01");
+        assert_eq!(format("0.00", 0.0005, None), "0.00");
+        assert_eq!(format("0.00", 9.995, None), "10.00");
+        assert_eq!(format("0", 999_999_999_999_999.0, None), "999999999999999");
     }
 
     #[test]
